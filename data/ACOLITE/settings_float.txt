@@ -77,9 +77,21 @@ station_box_size
 pans_scale_factor
 sensor_noise_bias_correction_sigma_factor
 sensor_noise
+fci_target_res
 fci_lon_0_default
 ahi_target_res
 ahi_lon_0_default
+abi_target_res
+
+Rrs_wave
+aw
+bbw
+TSS_wave
+TSS_scale
+NIR_wave
+NIR_threshold
+poly_wave
+poly_coef
 
 ## GEE
 st_lon

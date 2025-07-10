@@ -665,6 +665,97 @@ def acolite_l2w(gem, output = None, settings = None,
         #############################
 
         #############################
+        ## Jiang et al. TSS
+        if cur_par.startswith('tss_jiang'):
+            mask = True ## water parameter so apply mask
+
+            ## load config
+            if gem.gatts['sensor'] in ['S2A_MSI', 'S2B_MSI', 'S2C_MSI']:
+                tss_file = ac.config['data_dir']+'/Shared/algorithms/Jiang/tss_msi_2023.txt'
+                par_attributes = {'algorithm':'Jiang et al. 2023', 'title':'Jiang TSS'}
+                par_attributes['reference']='Jiang et al. 2023'
+                par_attributes['doi']='https://doi.org/10.1016/j.isprsjprs.2023.09.020'
+                par_name = 'TSS_Jiang2023'
+            elif gem.gatts['sensor'] in ['EN1_MERIS', 'S3A_OLCI', 'S3B_OLCI']:
+                tss_file = ac.config['data_dir']+'/Shared/algorithms/Jiang/tss_olci_2021.txt'
+                par_attributes = {'algorithm':'Jiang et al. 2021', 'title':'Jiang TSS'}
+                par_attributes['reference']='Jiang et al. 2021'
+                par_attributes['doi']='https://doi.org/10.1016/j.rse.2021.112386'
+                par_name = 'TSS_Jiang2021'
+            else:
+                print('Parameter {} not configured for {}'.format(cur_par, gem.gatts['sensor']))
+                continue
+
+            ## check algorithm version
+            if len(par_name) == len(cur_par):
+                if par_name.lower() != cur_par:
+                    print('Use l2w parameter {} for {}'.format(par_name, gem.gatts['sensor']))
+                    continue
+
+            ## load algorithm config data
+            tss_cfg = ac.acolite.settings.parse(None, settings=tss_file)
+
+            ## find Rrs data for required bands
+            sen_wave = []
+            for ki, k in enumerate(tss_cfg['Rrs_wave']):
+                ci, cw = ac.shared.closest_idx(rhos_waves, k)
+                cur_ds = [ds for ds in rhos_ds if ('{:.0f}'.format(cw) in ds)][0]
+                sen_wave.append(cw)
+                if ki == 0: Rrs_in = {}
+                cur_data = 1.0 * gem.data(cur_ds)
+                ## mask data
+                if (mask) & (setu['l2w_mask_water_parameters']): cur_data[(l2_flags & flag_value)!=0] = np.nan
+                ## convert to Rrs
+                Rrs_in[k] = cur_data/np.pi
+                del cur_data
+
+            par_atts[par_name] = par_attributes
+            par_data[par_name] = np.zeros(Rrs_in[k].shape) ## zeroes where no algorithm has been applied
+
+            ## find subsets where to apply algorithm
+            for ji in range(4):
+                ## 490 > 560
+                if ji == 0:
+                    sub = np.where((Rrs_in[490.] > Rrs_in[560.]) & (par_data[par_name] == 0))
+                    cur_wave = 560.
+
+                ## 490 > 620
+                if ji == 1:
+                    if gem.gatts['sensor'] in ['S2A_MSI', 'S2B_MSI', 'S2C_MSI']:
+                        ## estimate Rrs 620
+                        Rrs_620 = tss_cfg['poly_coef'][0] * Rrs_in[tss_cfg['poly_wave']] **3 +\
+                                  tss_cfg['poly_coef'][1] * Rrs_in[tss_cfg['poly_wave']] **2 +\
+                                  tss_cfg['poly_coef'][2] * Rrs_in[tss_cfg['poly_wave']] +\
+                                  tss_cfg['poly_coef'][3]
+                        sub = np.where((Rrs_in[490.] > Rrs_620) & (par_data[par_name] == 0))
+                    else:
+                        sub = np.where((Rrs_in[490.] > Rrs_in[620.]) & (par_data[par_name] == 0))
+                    cur_wave = 665.
+
+                ## NIR > blue
+                if ji == 2:
+                    sub = np.where((Rrs_in[tss_cfg['NIR_wave']] > Rrs_in[490.]) &\
+                                   (Rrs_in[tss_cfg['NIR_wave']] > tss_cfg['NIR_threshold']) &\
+                                   (par_data[par_name] == 0))
+                    cur_wave = 865.
+
+                ## leftover pixels
+                if ji == 3:
+                    sub = np.where(par_data[par_name] == 0)
+                    cur_wave = tss_cfg['NIR_wave']
+
+                ## continue if we have no pixels
+                if len(sub[0]) == 0: continue
+
+                ## compute tss based on QAA bbp
+                par_data[par_name][sub] = ac.parameters.jiang.tss(Rrs_in, tss_cfg, cur_wave, sub = sub)
+
+            ## remove Rrs
+            del Rrs_in
+        ## end Jiang et al. TSS
+        #############################
+
+        #############################
         ## CHL_OC
         if 'chl_oc' in cur_par:
             mask = True ## water parameter so apply mask
@@ -1384,7 +1475,7 @@ def acolite_l2w(gem, output = None, settings = None,
             ds_names = [ds for ds in rhos_ds]
             if len(par_split) == 2:
                 par_attributes['dataset']=par_split[1]
-                ds_names = [ds for ds in gem.datasets if '{}_'.format(par_split[1]) in ds]
+                ds_names = [ds for ds in gem.datasets if ds.startswith('{}_'.format(par_split[1]))]
                 ds_waves = [int(ds.split('_')[-1]) for ds in ds_names]
 
             ## number of products possible (for VIIRS use both I and M bands)
@@ -1436,6 +1527,77 @@ def acolite_l2w(gem, output = None, settings = None,
                 par_atts[par_name] = par_attributes
                 tmp_data = None
         ## end NDVI
+        #############################
+
+        #############################
+        ## NDSI
+        if (cur_par == 'ndsi') | (cur_par.split('_')[0] == 'ndsi'):
+            mask = False ## no water mask
+            par_split = cur_par.split('_')
+            par_attributes = {'algorithm':'NDSI', 'dataset':'rhos'}
+            par_attributes['reference']=''
+            par_attributes['algorithm']=''
+
+            ## wavelengths and max wavelength difference
+            ndsi_diff = [20, 50]
+            req_waves = [560, 1600]
+
+            ## select bands
+            required_datasets, req_waves_selected = [], []
+            ds_waves = [w for w in rhos_waves]
+            ds_names = [ds for ds in rhos_ds]
+            if len(par_split) == 2:
+                par_attributes['dataset']=par_split[1]
+                ds_names = [ds for ds in gem.datasets if ds.startswith('{}_'.format(par_split[1]))]
+                ds_waves = [int(ds.split('_')[-1]) for ds in ds_names]
+
+            ## number of products possible
+            ndsi_products = 1
+
+            ## find green and SWIR bands to use
+            ndsi_waves = []
+            ndsi_datasets = []
+            for pi in range(ndsi_products):
+                ndsi_waves.append([])
+                ndsi_datasets.append([])
+
+                for ci, cw in enumerate(req_waves):
+                    if 'VIIRS' in gem.gatts['sensor']:
+                        band_prefix = 'M'
+                        ds_names_ = [ds for ii, ds in enumerate(ds_names) if ds[5] == band_prefix]
+                        ds_waves_ = [ds_waves[ii] for ii, ds in enumerate(ds_names) if ds[5] == band_prefix]
+                        wi, wv = ac.shared.closest_idx(ds_waves_, cw)
+                        ds = ds_names_[wi]
+                    else:
+                        wi, wv = ac.shared.closest_idx(ds_waves, cw)
+                        ds = ds_names[wi]
+                    if wv > cw+ndsi_diff[ci]: continue
+                    if wv < cw-ndsi_diff[ci]: continue
+                    ndsi_waves[pi].append(wv)
+                    ndsi_datasets[pi].append(ds)
+
+            ## run through needed products
+            for pi in range(ndsi_products):
+                if len(ndsi_datasets[pi]) != len(req_waves): continue
+                par_attributes['waves']=ndsi_waves[pi]
+
+                ## output parameter name
+                par_name = '{}'.format(cur_par)
+                if 'VIIRS' in gem.gatts['sensor']:
+                    par_name += '_{}'.format(ndsi_datasets[pi][0][5].upper())
+
+                ## get data
+                for di, cur_ds in enumerate(ndsi_datasets[pi]):
+                    if di == 0: tmp_data = []
+                    cur_data = 1.0 * gem.data(cur_ds)
+                    tmp_data.append(cur_data)
+
+                ## compute ndsi
+                par_data[par_name] = (tmp_data[0]-tmp_data[1])/\
+                                     (tmp_data[0]+tmp_data[1])
+                par_atts[par_name] = par_attributes
+                tmp_data = None
+        ## end NDSI
         #############################
 
         #############################
@@ -1649,6 +1811,8 @@ def acolite_l2w(gem, output = None, settings = None,
         for cur_ds in par_data:
             ## add mask
             if (mask) & (setu['l2w_mask_water_parameters']): par_data[cur_ds][(l2_flags & flag_value)!=0] = np.nan
+            if (setu['l2w_mask_dem_shadow']) & (setu['dem_shadow_mask']): par_data[cur_ds][(l2_flags & (2**setu['flag_exponent_dem_shadow']))!=0] = np.nan
+
             ## write to NetCDF
             if verbosity > 1: print('Writing {}'.format(cur_ds))
             gemo.write(cur_ds, par_data[cur_ds], ds_att = par_atts[cur_ds])

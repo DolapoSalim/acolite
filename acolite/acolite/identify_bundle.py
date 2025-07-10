@@ -483,6 +483,27 @@ def identify_bundle(bundle, input_type = None, output = None):
         ################
 
         ################
+        ## GOES-R
+        try:
+            if os.path.isfile(bundle):
+                igatts = ac.shared.nc_gatts(bundle)
+            elif os.path.isdir(bundle):
+                fd = ac.goes.bundle_test(bundle)
+                for st in fd:
+                    for tp in fd[st].keys():
+                        for tm in fd[st][tp]:
+                            for bd in fd[st][tp][tm]:
+                                igatts = fd[st][tp][tm][bd]['gatts']
+                                break
+            if (igatts['platform_ID'] in ['G16', 'G17', 'G18', 'G19']) & (igatts['title'] == 'ABI L1b Radiances'):
+                input_type = 'GOES'
+                break ## exit loop
+        except:
+            pass ## continue to next sensor
+        ## end GOES-R
+        ################
+
+        ################
         ## EarthCare
         try:
             ## test bundle and get igatts
@@ -577,7 +598,9 @@ def identify_bundle(bundle, input_type = None, output = None):
         break ## exit loop
 
     ## remove the extracted bundle if it could not be identified
-    if (input_type is None) & (zipped) & (os.path.exists(bundle)) & (bundle != orig_bundle):
+    if (input_type is None) & (zipped) & (os.path.exists(bundle)) & (bundle != orig_bundle) & (ac.settings['run']['delete_extracted_input']):
+        print('Removing extracted bundle that could not be identified: {}'.format(bundle))
+        print('Files were extracted from: {}'.format(orig_bundle))
         shutil.rmtree(bundle)
         bundle = '{}'.format(orig_bundle)
 
